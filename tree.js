@@ -28,23 +28,27 @@ class Octree {
     }
 
     _createMortonCodes() {
-        const lo = [ Infinity,  Infinity,  Infinity];
-        const hi = [-Infinity, -Infinity, -Infinity];
+        let lo = [ Infinity,  Infinity,  Infinity];
+        let hi = [-Infinity, -Infinity, -Infinity];
         for (let i=0; i<this.points.length; ++i) {
             const v = this.points[i];
             const c = i % 3;
             lo[c] = Math.min(lo[c], v);
             hi[c] = Math.max(hi[c], v);
         }
+        this.extent = Math.max(hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2]);
+        const center = [(hi[0]+lo[0])/2, (hi[1]+lo[1])/2, (hi[2]+lo[2])/2]
+        const h = this.extent/2;
+        lo = [center[0]-h, center[1]-h, center[2]-h];
+        hi = [center[0]+h, center[1]+h, center[2]+h];
         this.bounds = {lo, hi};
-        this.extent = hi.map((h, c) => h - lo[c]);
-        const scale = lo.map((_,c)=>1023.0 / (this.extent[c]+1e-8));
+        const scale = 1023.0 / (this.extent+1e-8);
         const codes = new BigUint64Array(this.pointN);
         for (let i = 0; i < this.pointN; ++i) {
             codes[i] = BigInt(i);
             for (let c=0; c<3; ++c) {
                 const v = this.points[i * 3 + c];
-                const nv = (v - lo[c]) * scale[c];
+                const nv = (v - lo[c]) * scale;
                 codes[i] |= BigInt(dilate3(nv | 0) << c)<<32n;
             }
         }
@@ -83,10 +87,10 @@ class Octree {
             count[octant]++;
         }
         node.children = [];
-        const half = this.extent.map(e => e / (1<<(level+1)));
+        const half = this.extent / (1<<(level+1));
         for (let i=0; i<8; ++i) {
             if (count[i]) {
-                const childPos = pos.map((p, c) => p + (((i >> c) & 1) * half[c]));
+                const childPos = pos.map((p, c) => p + (((i >> c) & 1) * half));
                 node.children[i] = this._buildNode(level+1, start, start+count[i], childPos, ownIdx);
             }
             start += count[i];

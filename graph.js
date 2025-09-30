@@ -1,24 +1,11 @@
 "use strict";
-const range = n=>[...Array(n)].map((_,i)=>i);
-
 const NN=3;
+const CaseN = (NN+1)*2;
 
 const calcCases = (nodes, states)=>nodes.map((node, i)=>{
     const nc = node.reduce((a, j)=>a+states[j], 0);
     return nc + states[i]*(NN+1)
 });
-
-function createLinks(nodes) {
-    const links = [];
-    for (let source=0; source<nodes.length; ++source) {
-        for (const target of nodes[source]) {
-            if (source < target) {
-                links.push({source, target});
-            }
-        }
-    }
-    return links;
-}
 
 class GrowingGraph {
     constructor(rule=2182) {
@@ -29,21 +16,7 @@ class GrowingGraph {
         this.states = [0,0,0,1,0, 1,0,1,1,1];
         this.dividing = [];
         this.phase = 0;
-        this.links = [];
         this.nodes.forEach(n=>{n.gen = 0;});
-        this.updateLinks();
-    }
-
-    updateLinks() {
-        for (let source=0, i=0; source<this.nodes.length; ++source) {
-            for (const target of this.nodes[source]) {
-                if (source > target) continue;
-                this.links[i] = this.links[i] || {};
-                this.links[i].source = this.nodes[source];
-                this.links[i].target = this.nodes[target];
-                ++i
-            }
-        }
     }
 
     reconnect(source, oldPeer, newPeer) {
@@ -57,8 +30,12 @@ class GrowingGraph {
         if (this.phase === 0) { // update states
             calcCases(nodes, states).forEach((r,i)=>{
                 this.states[i] = (rule >> r) & 1;
-                this.dividing[i] = (rule >> (r+8)) & 1;
-            });
+                this.dividing[i] = (rule >> (r+CaseN)) & 1;
+                // const noise = Math.random();
+                // if (noise<0.00005) {
+                //     this.states[i] = 1-this.states[i];
+                // }
+             });
         } else {
             ++this.lastGen;
             for (let i=0; i < this.dividing.length; ++i) {
@@ -71,16 +48,9 @@ class GrowingGraph {
                 states.push(states[i], states[i]);
                 this.reconnect(b, i, j);
                 this.reconnect(c, i, k);
-                const {x,y,z} = nodes[i];
-                for (const [p,q] of [[i,a],[j,b],[k,c]]) {
-                    nodes[p].x = 0.7*x + 0.3*nodes[q].x;
-                    nodes[p].y = 0.7*y + 0.3*nodes[q].y;
-                    nodes[p].z = 0.7*z + 0.3*nodes[q].z;  
-                }
                 nodes[i].gen = nodes[j].gen = nodes[k].gen = this.lastGen;
                 this.dividing[i] = 0;
             }
-            this.updateLinks();
         }
         this.phase = 1-this.phase;
         return this;

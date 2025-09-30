@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Canvas + D3 Force Graph</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="graph.js"></script>
     <script src="tree.js"></script>
+    <script src="force.js"></script>
+    <script src="swissgl.js"></script>
     <style>
         body { margin: 0; background: #1a1a1a; overflow: hidden; }
         canvas { display: block; width: 100vw; height: 100vh;}
@@ -16,8 +17,11 @@
     <canvas></canvas>
     <div id="status" style="position: absolute; bottom: 10px; left: 10px; color: white; font-family: monospace; z-index: 100;">status</div>
     <script>
+        "use strict";
         const canvas = document.querySelector('canvas');
-        const ctx = canvas.getContext('2d');        
+        //const ctx = canvas.getContext('2d');
+        const glsl = SwissGL(canvas);
+
 
         //const rule = 1062;
         //const rule = 2210;
@@ -34,219 +38,87 @@
 //0b0101_0110_1100_1100
 //0b0000_1100_1011_1100 - interesting
 
-        const rule = 0b0000_1100_1011_1100;
+        const rule = 2182;
+        const GrowthLimit = 10000;
 
-        const graph = new GrowingGraph(rule);
-
-        function forceManyBody(strength=-3, maxDist=2000) {
-            let nodes;
-
-            function force(alpha) {
-                const {forces, indices, tree, centers} = calcForces(nodes, maxDist);
-                force.tree = tree;
-                force.centers = centers;
-                const c = strength*alpha;
-                for (let i=0; i<indices.length; ++i) {
-                    const node = nodes[indices[i]];
-                    node.vx += c*forces[i*3];
-                    node.vy += c*forces[i*3+1];
-                }
-
-            }
-            force.initialize = function(initNodes) {
-                nodes = initNodes;
-            }
-            return force;
-        }
-
-        function forceLink({distance=15, iterations=4, strength=0.4}={}) {
-            let nodes;
-
-            function force(alpha) {
-                for (let k=0; k<iterations; ++k) {
-                    for (let i=0; i<nodes.length; ++i) {
-                        const source = nodes[i];
-                        for (n=0; n<source.length; ++n) {
-                            const j = source[n]; 
-                            if (i > j) continue;
-                            const target = nodes[j];
-                            let x = target.x + target.vx - source.x - source.vx;
-                            let y = target.y + target.vy - source.y - source.vy;
-                            let l = Math.max(Math.sqrt(x * x + y * y), 1.0);
-                            l = (l - distance) / l * alpha * strength;
-                            x *= l, y *= l;
-                            target.vx -= x; target.vy -= y;
-                            source.vx += x; source.vy += y;
-                        }
-                    }
-                }
-            }
-            force.initialize = function(initNodes) {
-                nodes = initNodes;
-            }
-            return force;
-        }
-
-
-        const simulation = d3.forceSimulation(graph.nodes)
-            .force("link", forceLink())
-            .force("charge", forceManyBody())
-            //.force("center", d3.forceCenter().strength(0.05))
-            //.force('y', d3.forceY().strength(0.01))
-            .alphaTarget(1).velocityDecay(0.1).tick(100).stop();
-    
-        const softStates = [...graph.states];
-        const softDivinging = [...graph.dividing];
-
-        function grow() { 
-            if (graph.nodes.length > 10000) return;
-            const {nodes, links} = graph.grow();
-            simulation.nodes(nodes);
-            simulation.alpha(1);
-            const delay = Math.max(100*Math.exp(-0.05*graph.lastGen), 50);
-            //setTimeout(grow, delay);         
-        }
-
-        function accumPoints(tree) {
-            const centers = new Float32Array(tree.nodes.length * 3);
-            const mass = new Float32Array(tree.nodes.length);
-            for (let ni=tree.nodes.length-1; ni>=0; --ni) {
-                const node = tree.nodes[ni];
-                mass[ni] = node.end - node.start;
-                if (node.next == ni+1) { // leaf
-                    for (let i=node.start; i<node.end; ++i) {
-                        for (let c=0; c<3; ++c) {
-                            centers[ni*3+c] += tree.points[i*3+c];
-                        }
-                    }
-                } 
-                if (node.parentIdx == ni) continue
-                for (let c=0; c<3; ++c) {
-                    centers[node.parentIdx*3+c] += centers[ni*3+c];
-                }
-            }
-            for (let i=0; i<centers.length; ++i) {
-                centers[i] /= mass[(i/3)|0];
-            }
-            return {centers, mass};
-        }
-    
-        function calcForces(graphNodes, maxDist) {
-            const pointN = graphNodes.length;
-            let points = new Float32Array(pointN*3);
-            for (let i=0; i<pointN; ++i) {
-                const {x,y} = graphNodes[i];
-                points[i*3] = x;
-                points[i*3+1] = y;
-            }
-            const tree = new Octree(points);
-            points = tree.points; // use points sorted by Octree
-            const {centers} = accumPoints(tree);
-
-            const maxW = Math.max(...tree.extent);
-            const theta2 = 0.81; // Barnes-Hut theta squared
-            const maxDist2 = maxDist*maxDist;
-
-            const forces = new Float32Array(pointN*3);
-            let nodeCount=0, pointCount=0, p;
-            for (let pointI = 0; pointI < tree.pointN; ++pointI) {
-                const [x,y,z] = points.subarray(pointI*3, pointI*3+3)
-                for (let nodeI=0; nodeI<tree.nodes.length;) {
-                    const node = tree.nodes[nodeI];
-                    const w = maxW/(1<<node.level);
-                    p=nodeI*3;
-                    const dx=centers[p++]-x, dy=centers[p++]-y, dz=centers[p]-z;
-                    const l2 = dx*dx + dy*dy + dz*dz;
-                    const tooFar = maxDist2 < l2;
-                    if (w*w < theta2*l2) {
-                        // Far enough, treat as single body
-                        nodeI = node.next;
-                        if (tooFar) continue;
-                        ++nodeCount;
-
-                        const mass = node.end-node.start;
-                        const c = mass / (1.0+l2);
-                        p = pointI*3;
-                        forces[p++] += c*dx; forces[p++] += c*dy; forces[p] += c*dz;
-                    } else {
-                        ++nodeI;
-                        if (node.next == nodeI && !tooFar) { // leaf
-                            ++pointCount;
-                            for (let i=node.start*3; i<node.end*3; i+=3) {
-                                const dx=points[i]-x, dy=points[i+1]-y, dz=points[i+2]-z;
-                                const l2 = dx*dx + dy*dy + dz*dz;
-                                const c = 1.0 / (1.0+l2);
-                                p = pointI*3;
-                                forces[p++] += c*dx; forces[p++] += c*dy; forces[p] += c*dz;
-                            }
-                        }
-                    }
-                }
-            }
-            const status = document.getElementById('status');
-            status.innerText = `nc:${nodeCount}, pc:${pointCount}`;
-            return {forces, indices:tree.indices, tree, centers};
-        }
-
+        let graph, simulation;
         const status = document.getElementById('status');
 
+        async function init() {
+            graph = new GrowingGraph(rule);
+            //while (graph.nodes.length < GrowthLimit) graph.grow();
+            const {instance} = await WebAssembly.instantiateStreaming(fetch('main.wasm'));
+            simulation = new GraphLayout(graph.nodes, instance);
+
+            requestAnimationFrame(frame);
+        }
+        init();
+
+        const points = new Float32Array(256*256*4);
+        const links = new Int32Array(256*256*2);
+
         function frame(time) {
-            if (time > 500) grow();
+            requestAnimationFrame(frame);
+            if (time > 1000 && graph.nodes.length <= GrowthLimit) {
+                graph.grow();
+            }
             simulation.tick(2);
         
-            for (let i=0; i<graph.states.length; i++) {
-                softStates[i] = (softStates[i]||0)*0.8 + graph.states[i]*0.2;
-                softDivinging[i] = (softDivinging[i]||0)*0.8 + (graph.dividing[i]||0)*0.2;
-            }
             const DPR = devicePixelRatio;
             const width = canvas.width = window.innerWidth*DPR;
             const height = canvas.height = window.innerHeight*DPR;
 
-            let {tree, centers} = simulation.force('charge');
-            if (!tree) return; // tree might not be initialized on first render
+            const {tree} = simulation;
 
             const {bounds, extent} = tree;
-            const padding = 0.95;
-            const scale = padding * Math.min(width / (extent[0] || 1), height / (extent[1] || 1));
+            const center = bounds.lo.map((l,i)=>(l+bounds.hi[i])/2);
 
-            const translateX = (width - extent[0] * scale) / 2 - bounds.lo[0] * scale;
-            const translateY = (height - extent[1] * scale) / 2 - bounds.lo[1] * scale;
+            const {pointN, pos} = simulation;
+            const {lastGen} = graph;
+            let linkN = 0;
+            for (let i=0; i<pointN; ++i) {
+                for (let c=0; c<3; ++c) {
+                    points[i*4+c] = pos[i*3+c];
+                }
+                points[i*4+3] = graph.nodes[i].gen;
+                for (const j of graph.nodes[i]) {
+                    if (i>j) continue;
+                    links[linkN*2] = i; links[linkN*2+1] = j;
+                    linkN++;
+                }
+            }
+            const pointsTex = glsl({}, {data:points, size:[256, 256], format:'rgba32f', tag:'points'});
+            const linksTex = glsl({}, {data:links, size:[256, 256], format:'rg32i', tag:'links'})
+            glsl({pointsTex, linksTex, center, extent, time, Grid:[linkN], Blend:'s*sa+d*(1-sa)', Aspect:'fit', VP:`
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                ivec2 link = linksTex(id2xy(ID.x)).xy;
+                vec2 p0 = pointsTex(id2xy(link.x)).xy;
+                vec2 p1 = pointsTex(id2xy(link.y)).xy;
+                vec2 dp = normalize(p1-p0);
+                vec2 p = mix(p0, p1, UV.x) + vec2(-dp.y, dp.x)*XY.y;
+                VPos.xy = 1.9*(p.xy-center.xy)/(extent+30.);
+            `, FP:`1.`});
+            glsl({pointsTex, lastGen, center, extent, time, Grid:[pointN], Blend:'s*sa+d*(1-sa)', Aspect:'fit', VP:`
+            vec3 color_map(float t) {
+                const vec3 c0 = vec3(0.05873234392399702, 0.02333670892565664, 0.5433401826748754);
+                const vec3 c1 = vec3(2.176514634195958, 0.2383834171260182, 0.7539604599784036);
+                const vec3 c2 = vec3(-2.689460476458034, -7.455851135738909, 3.110799939717086);
+                const vec3 c3 = vec3(6.130348345893603, 42.3461881477227, -28.51885465332158);
+                const vec3 c4 = vec3(-11.10743619062271, -82.66631109428045, 60.13984767418263);
+                const vec3 c5 = vec3(10.02306557647065, 71.41361770095349, -54.07218655560067);
+                const vec3 c6 = vec3(-3.658713842777788, -22.93153465461149, 18.19190778539828);
+                return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+            }
+            void vertex() {
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                vec4 p = pointsTex(id2xy(ID.x));
+                varying vec3 color = color_map(p.w/(lastGen+1.));
+                //varying vec3 color = color_map(float(ID.x)/float(Grid.x-1));
+                VPos.xy = 1.9*(p.xy-center.xy+XY*10.0)/(extent+30.);
+            }`, FP:`vec4(color,1)*smoothstep(1.0, 0.8, length(XY))`});
 
-            ctx.resetTransform()
-            ctx.fillStyle = '#111';
-            ctx.fillRect(0, 0, width, height);
-            ctx.transform(scale, 0, 0, scale, translateX, translateY);
-
-            // Draw links
-            ctx.strokeStyle = '#888';
-            ctx.lineWidth = 1/scale;
-            ctx.beginPath();
-            graph.links.forEach(d => {
-                ctx.moveTo(d.source.x, d.source.y);
-                ctx.lineTo(d.target.x, d.target.y);
-            });
-            ctx.stroke();
-            
-            // Draw nodes
-            const cmap = d3.scaleSequential(d3.interpolatePlasma).domain([0, graph.lastGen+1]);
-            ctx.strokeStyle = '#fff';
-
-            //console.log(scale);
-            graph.nodes.forEach((d,i) => {
-                ctx.fillStyle = cmap(d.gen);
-                ctx.beginPath();
-                const r = (5+softDivinging[i]*3) / Math.min(scale*2., 1.0);
-                ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-                ctx.fill();
-                //ctx.lineWidth = 0.001+1.0*softStates[i];
-                //ctx.stroke;
-                ctx.fillStyle = '#fff';
-                ctx.beginPath();
-                ctx.arc(d.x, d.y, softStates[i]*r*0.6, 0, Math.PI * 2);
-                ctx.fill()
-            });
-            
-            if (1) {
+            /*
+            if (0) {
                 ctx.lineWidth = 1/scale;
                 ctx.strokeStyle = '#5f5';
                 ctx.fillStyle = 'rgba(40,200,40,0.5)';
@@ -255,8 +127,8 @@
                     const node = tree.nodes[i];
                     const [x, y] = node.pos;
                     const s = 1<<node.level;
-                    const [w, h] = tree.extent;
-                    ctx.strokeRect(x, y, w/s, h/s);
+                    const w = tree.extent;
+                    //ctx.strokeRect(x, y, w/s, w/s);
                     const cx=centers[i*3], cy=centers[i*3+1];
                     const mass = node.end-node.start;
                     ctx.beginPath()
@@ -278,11 +150,9 @@
             ctx.fillStyle = "#fff";
             ctx.fillText(`node n: ${graph.nodes.length}`,40,60);
             ctx.fillStyle = "#aaa";
-            ctx.fillText(`rule: ${rule}`,40,120);
-            requestAnimationFrame(frame);
+            ctx.fillText(`rule: ${rule}`,40,120); */
         }
-        requestAnimationFrame(frame);
-        //setTimeout(grow, 100);
+
     </script>
 </body>
 </html>
