@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Canvas + D3 Force Graph</title>
+    <title>Growing graphs</title>
     <script src="graph.js"></script>
     <script src="tree.js"></script>
     <script src="force.js"></script>
     <script src="swissgl.js"></script>
+    <script src="dat.gui.min.js"></script>
     <style>
         body { margin: 0; background: #1a1a1a; overflow: hidden; }
         canvas { display: block; width: 100vw; height: 100vh;}
@@ -22,34 +23,57 @@
         //const ctx = canvas.getContext('2d');
         const glsl = SwissGL(canvas);
 
+        let graph, simulation, wasm;
+        const rules = [0x426, 0x8a2, 0x8ae, 0x886, 0x887, 0x8bc, 0x457, 0x26a, 0x409, 0x1016, 0x897, 0x4625, 0x4621, 0x6621, 0x56cc, 0xcbc, 0x3051, 0x1082, 0x289, 0x21f2];
+        const params = {
+            rule: 2182,
+            flipProb: 0.0,
+            dim: 2,
+            preset: '-',
+            reset: ()=>reset(),
+        };
+        const gui = new dat.GUI();
+        gui.add(params, 'rule', rules).onChange(reset);
+        gui.add(params, 'flipProb', [0.0, 1e-3, 1e-4, 5e-5, 1e-5]).onChange(v=>{
+            graph.flipProb = v;
+        });
+        gui.add(params, 'dim', [2, 3]).onChange(v=>{
+            simulation.dim = v;
+        });
+        const presets = {
+            'quartatic'         : {rule: 2182,  flipProb: 0.0},
+            'quartatic - mutations' : {rule: 2182,  flipProb: 5e-5},
+            'two branches'      : {rule: 3260,  flipProb: 0.0},
+            'exp tree'              : {rule: 2236, flipProb: 0.0},
+            'exp hyper'   : {rule: 618, flipProb: 0.0},
+            'exp fractal'   : {rule: 649, flipProb: 0.0},
+            'exp symmethry'   : {rule: 1111, flipProb: 0.0},
+            'rubust linear'     : {rule: 22220, flipProb: 1e-3},
+            'stable explision'  : {rule: 8690,  flipProb: 1e-3},
+            'fancy tentacles'   : {rule: 17953, flipProb: 5e-5},
+        }
+        gui.add(params, 'preset', Object.keys(presets)).onChange(name=>{
+            Object.assign(params, presets[name]);
+            gui.updateDisplay();
+            reset();
+        });
+        gui.add(params, 'reset');
 
-        //const rule = 1062;
-        //const rule = 2210;
-        //const rule = 2222;
-        //const rule = 2182; !
-        //const rule = 2183;//
-        //const rule = 2236;
-        //const rule = 1111;
-        //const rule = 618;
-        //1033 4118 2199
-//0b0100_0110_0010_0101 !        
-//0b0100_0110_0010_0001 !
-//0b0110_0110_0010_0001
-//0b0101_0110_1100_1100
-//0b0000_1100_1011_1100 - interesting
-
-        const rule = 0b0000_1100_1011_1100;
         const GrowthLimit = 10000;
 
-        let graph, simulation;
+
         const status = document.getElementById('status');
 
-        async function init() {
-            graph = new GrowingGraph(rule);
-            //while (graph.nodes.length < GrowthLimit) graph.grow();
-            const {instance} = await WebAssembly.instantiateStreaming(fetch('main.wasm'));
-            simulation = new GraphLayout(graph.nodes, instance);
+        function reset() {
+            graph = new GrowingGraph(params.rule);
+            graph.flipProb = params.flipProb;
+            simulation = new GraphLayout(graph, wasm.instance, params.dim);
+        }
 
+        async function init() {
+            wasm = await WebAssembly.instantiateStreaming(fetch('main.wasm'));
+            reset();
+            console.log(graph, simulation)
             requestAnimationFrame(frame);
         }
         init();
@@ -57,10 +81,129 @@
         const points = new Float32Array(256*256*4);
         const links = new Int32Array(256*256*2);
 
+
+        function renderGraph(target=null) {
+            const {tree} = simulation;
+            const {bounds, extent} = tree;
+            const center = bounds.lo.map((l,i)=>(l+bounds.hi[i])/2);
+
+            const {pointN, pos} = simulation;
+            const {lastGen} = graph;
+            for (let i=0; i<pointN; ++i) {
+                for (let c=0; c<3; ++c) {
+                    points[i*4+c] = pos[i*3+c];
+                }
+                points[i*4+3] = graph.nodes[i].gen;
+            }
+            const linkN = graph.links.length/2;
+            links.set(graph.links);
+            const renderData = {
+                pointsTex: glsl({}, {data:points, size:[256, 256], format:'rgba32f', tag:'points'}),
+                linksTex:  glsl({}, {data:links, size:[256, 256], format:'rg32i', tag:'links'}),
+                center, extent, lastGen, Blend:'s*sa+d*(1-sa)', Aspect:'fit'
+            };
+            glsl({...renderData, Grid:[linkN], VP:`
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                ivec2 link = linksTex(id2xy(ID.x)).xy;
+                vec3 p0 = pointsTex(id2xy(link.x)).xyz-center;
+                vec3 p1 = pointsTex(id2xy(link.y)).xyz-center;
+                vec2 dp = normalize(p1.xy-p0.xy);
+                vec2 p = mix(p0, p1, UV.x).xy + vec2(-dp.y, dp.x)*XY.y;
+                VPos.xy = 1.9*p.xy/(extent+30.);
+            `, FP:`0.9`}, target);
+            glsl({...renderData, Grid:[pointN], VP:`
+            vec3 color_map(float t) {
+                const vec3 c0 = vec3(0.06, 0.02, 0.54);
+                const vec3 c1 = vec3(2.18, 0.24, 0.75);
+                const vec3 c2 = vec3(-2.69, -7.46, 3.11);
+                const vec3 c3 = vec3(6.13, 42.35, -28.52);
+                const vec3 c4 = vec3(-11.11, -82.67, 60.14);
+                const vec3 c5 = vec3(10.02, 71.41, -54.07);
+                const vec3 c6 = vec3(-3.66, -22.93, 18.19);
+                return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+            }
+            void vertex() {
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                vec4 p = pointsTex(id2xy(ID.x));
+                p.xyz -= center;
+                varying vec3 color = color_map(p.w/(lastGen+1.));
+                color = min(color, 0.9);
+                color *= 1.0+max(0.0, 1.0-(lastGen-p.w)/10.0);
+                //varying vec3 color = color_map(float(ID.x)/float(Grid.x-1));
+                VPos.xy = 1.9*(p.xy+XY*10.0)/(extent+30.);
+            }`, FP:`vec4(color,1)*smoothstep(1.0, 0.8, length(XY))`}, target);
+
+            return target;
+        }
+
+        class Bloom {
+            static Tags = ['3d', 'novr'];
+            constructor(glsl, gui) {
+                this.glsl = glsl;
+                this.bloom = 1.5; //2.0;
+                this.gamma = 2.0; //2.2;
+                if (gui) {
+                    gui.add(this, 'bloom', 0.0, 10.0, 0.01);
+                    gui.add(this, 'gamma', 0.1, 3.0, 0.01);
+                }
+
+                this.blurRadius = [ 3, 5, 7, 9, 11 ];
+                this.blurKernel = this.blurRadius.map(r=>{
+                    const a = new Float32Array(12);
+                    a[0] = 1.0;
+                    let accum = a[0];
+                    for (let i=1; i<r; ++i) {
+                        a[i] = Math.exp(-5.0*i*i/r/r);
+                        accum += 2.0*a[i];
+                    }
+                    return a.map(x=>x/accum);
+                });
+            }
+
+            compose(frame) {
+                let [w, h] = frame.size;
+                const DPR = devicePixelRatio;
+                const glsl = this.glsl;
+                let inputTex = glsl({T:frame.linear, 
+                    FP:`vec4 c = T(UV); FOut = (c-0.9)/0.1;`}, 
+                    {size: [w, h], filter:'linear', wrap:'edge', tag:'lum'});
+                
+                const lodN = this.blurRadius.length, lods = {};
+                for (let lod=0; lod<lodN; ++lod, w/=2, h/=2) {
+                    for (const dir of [[1,0],[0,1]]) {
+                        lods['L'+lod] = inputTex = glsl({T:inputTex, dir, 
+                            R:this.blurRadius[lod], kernel:this.blurKernel[lod], FP:`
+                            uniform float kernel[12];
+                            uniform int R;
+                            void fragment() {
+                                FOut = T(UV)*kernel[0];
+                                vec2 dp = dir/vec2(ViewSize), p=dp;
+                                for (int i=1; i<R; i+=1, p+=dp) {
+                                    FOut += kernel[i] * (T(UV+p) + T(UV-p));
+                                }
+                            }`}, {size:[w, h], story:2, format:'rgb11f', 
+                                filter:'linear', wrap:'edge', tag:`lod${lod}`})[0];
+                    }
+                }
+                const {bloom, gamma} = this;
+                glsl({...lods, T:frame, bloom, gamma, FP:`
+                    vec4 acc = T(UV) + bloom*(L0(UV) + L1(UV) + L2(UV) + L3(UV) + L4(UV));
+                    FOut = pow(acc, vec4(1./gamma));
+                `})
+            }
+        }
+        const bloom = new Bloom(glsl, gui);
+
+
         function frame(time) {
             requestAnimationFrame(frame);
-            if (time > 1000 && graph.nodes.length <= GrowthLimit) {
-                graph.grow();
+            if (time > 1000) {
+                if (graph.nodes.length <= GrowthLimit) {
+                    graph.grow();
+                    status.innerText = `${graph.nodes.length} nodes`;
+                } else {
+                    //graph.lastGen += 1;
+                }
             }
             simulation.tick(2);
         
@@ -68,96 +211,12 @@
             const width = canvas.width = window.innerWidth*DPR;
             const height = canvas.height = window.innerHeight*DPR;
 
-            const {tree} = simulation;
-
-            const {bounds, extent} = tree;
-            const center = bounds.lo.map((l,i)=>(l+bounds.hi[i])/2);
-
-            const {pointN, pos} = simulation;
-            const {lastGen} = graph;
-            //let linkN = 0;
-            for (let i=0; i<pointN; ++i) {
-                for (let c=0; c<3; ++c) {
-                    points[i*4+c] = pos[i*3+c];
-                }
-                points[i*4+3] = graph.nodes[i].gen;
-                // for (const j of graph.nodes[i]) {
-                //     if (i>j) continue;
-                //     links[linkN*2] = i; links[linkN*2+1] = j;
-                //     linkN++;
-                // }
-            }
-            const linkN = graph.links.length/2;
-            links.set(graph.links);
-            const pointsTex = glsl({}, {data:points, size:[256, 256], format:'rgba32f', tag:'points'});
-            const linksTex = glsl({}, {data:links, size:[256, 256], format:'rg32i', tag:'links'})
-            glsl({pointsTex, linksTex, center, extent, time, Grid:[linkN], Blend:'s*sa+d*(1-sa)', Aspect:'fit', VP:`
-                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
-                ivec2 link = linksTex(id2xy(ID.x)).xy;
-                vec3 p0 = pointsTex(id2xy(link.x)).xyz-center;
-                vec3 p1 = pointsTex(id2xy(link.y)).xyz-center;
-                //p0.xz *= rot2(time/1000.0);
-                //p1.xz *= rot2(time/1000.0);
-                vec2 dp = normalize(p1.xy-p0.xy);
-                vec2 p = mix(p0, p1, UV.x).xy + vec2(-dp.y, dp.x)*XY.y;
-                VPos.xy = 1.9*p.xy/(extent+30.);
-            `, FP:`1.`});
-            glsl({pointsTex, lastGen, center, extent, time, Grid:[pointN], Blend:'s*sa+d*(1-sa)', Aspect:'fit', VP:`
-            vec3 color_map(float t) {
-                const vec3 c0 = vec3(0.05873234392399702, 0.02333670892565664, 0.5433401826748754);
-                const vec3 c1 = vec3(2.176514634195958, 0.2383834171260182, 0.7539604599784036);
-                const vec3 c2 = vec3(-2.689460476458034, -7.455851135738909, 3.110799939717086);
-                const vec3 c3 = vec3(6.130348345893603, 42.3461881477227, -28.51885465332158);
-                const vec3 c4 = vec3(-11.10743619062271, -82.66631109428045, 60.13984767418263);
-                const vec3 c5 = vec3(10.02306557647065, 71.41361770095349, -54.07218655560067);
-                const vec3 c6 = vec3(-3.658713842777788, -22.93153465461149, 18.19190778539828);
-                return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
-            }
-            void vertex() {
-                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
-                vec4 p = pointsTex(id2xy(ID.x));
-                p.xyz -= center;
-                //p.xz *= rot2(time/1000.0);
-                varying vec3 color = color_map(p.w/(lastGen+1.));
-                //varying vec3 color = color_map(float(ID.x)/float(Grid.x-1));
-                VPos.xy = 1.9*(p.xy+XY*10.0)/(extent+30.);
-            }`, FP:`vec4(color,1)*smoothstep(1.0, 0.8, length(XY))`});
-
-            /*
-            if (0) {
-                ctx.lineWidth = 1/scale;
-                ctx.strokeStyle = '#5f5';
-                ctx.fillStyle = 'rgba(40,200,40,0.5)';
-                for (let i=0; i<tree.nodes.length; ++i) {
-                    //if (tree.nodes[i].next != i+1) continue; // skip non-leaves
-                    const node = tree.nodes[i];
-                    const [x, y] = node.pos;
-                    const s = 1<<node.level;
-                    const w = tree.extent;
-                    //ctx.strokeRect(x, y, w/s, w/s);
-                    const cx=centers[i*3], cy=centers[i*3+1];
-                    const mass = node.end-node.start;
-                    ctx.beginPath()
-                    ctx.arc(cx, cy, 4*Math.sqrt(mass), 0, Math.PI * 2);
-                    ctx.fill();
-
-                    ctx.beginPath()
-                    ctx.moveTo(cx, cy);
-                    const pi = node.parentIdx;
-                    const px=centers[pi*3], py=centers[pi*3+1];
-                    ctx.lineTo(px, py);
-                    ctx.stroke()
-                    
-                }
-            }
-
-            ctx.resetTransform();
-            ctx.font = "50px Arial";
-            ctx.fillStyle = "#fff";
-            ctx.fillText(`node n: ${graph.nodes.length}`,40,60);
-            ctx.fillStyle = "#aaa";
-            ctx.fillText(`rule: ${rule}`,40,120); */
+            const framebuf = glsl({Clear:0}, {tag:'frame', msaa:4});
+            renderGraph(framebuf);
+            bloom.compose(framebuf);
         }
+
+
 
     </script>
 </body>
