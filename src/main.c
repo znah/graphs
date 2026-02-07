@@ -387,29 +387,20 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
                 }
             } else if (niA == niB) {
                 // Self-interaction: recurse on unique children pairs
-                int childI = niA + 1;
-                while (childI < node_next[niA]) {
-                    if (top < 4096) stack[top++] = (NodePair){childI, childI};
-                    int childJ = node_next[childI];
-                    while (childJ < node_next[niA]) {
-                        if (top < 4096) stack[top++] = (NodePair){childI, childJ};
-                        childJ = node_next[childJ];
+                for (int m = niA + 1; m < node_next[niA]; m = node_next[m]) {
+                    for (int n = m; n < node_next[niA]; n = node_next[n]) {
+                        if (top < 4096) stack[top++] = (NodePair){m, n};
                     }
-                    childI = node_next[childI];
                 }
-            } else if (!leafA && (leafB || wA > wB)) {
+            } else if (!leafA && (leafB || wA >= wB)) {
                 // Split larger node A
-                int childA = niA + 1;
-                while (childA < node_next[niA]) {
-                    if (top < 4096) stack[top++] = (NodePair){childA, niB};
-                    childA = node_next[childA];
+                for (int m = niA + 1; m < node_next[niA]; m = node_next[m]) {
+                    if (top < 4096) stack[top++] = (NodePair){m, niB};
                 }
             } else {
                 // Split larger node B
-                int childB = niB + 1;
-                while (childB < node_next[niB]) {
-                    if (top < 4096) stack[top++] = (NodePair){niA, childB};
-                    childB = node_next[childB];
+                for (int m = niB + 1; m < node_next[niB]; m = node_next[m]) {
+                    if (top < 4096) stack[top++] = (NodePair){niA, m};
                 }
             }
         }
