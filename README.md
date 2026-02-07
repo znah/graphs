@@ -32,7 +32,7 @@ To compile the WebAssembly core:
 bash build.sh
 ```
 
-Requires the **Zig** compiler to targeting `wasm32-freestanding`.
+Requires the **[Zig](https://ziglang.org)** compiler to targeting `wasm32-freestanding`.
 
 ## 📂 Project Structure
 
@@ -42,3 +42,14 @@ Requires the **Zig** compiler to targeting `wasm32-freestanding`.
 -   `app.js`: High-level application controller and autonomous behavior.
 -   `index.html`: Interactive simulation viewer.
 -   `alice.html`: Autonomous generative art mode.
+
+## 🤖 AI Development Assistance
+
+This project was developed with the assistance of **Gemini**, which helped in:
+- Porting complex graph and octree logic from JavaScript to high-performance WebAssembly (C).
+- Architecting and optimizing the dual-tree Barnes-Hut algorithm for $O(N \log N)$ force calculations.
+- Refactoring the codebase into a modular, reusable architecture.
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the `LICENSE` file for details.
