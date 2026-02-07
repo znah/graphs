@@ -32,6 +32,7 @@ class App {
         this.params = {
             rule: 2182,
             flipProb: 0.0,
+            growthLimit: this.options.growthLimit,
             dim: 2,
             preset: '-',
             reset: () => this.reset(),
@@ -42,6 +43,7 @@ class App {
         this.gui.add(this.params, 'flipProb', [0.0, 1e-3, 1e-4, 5e-5, 1e-5]).onChange(v => {
             if (this.graph) this.graph.flipProb = v;
         });
+        this.gui.add(this.params, 'growthLimit', 100, 65536).step(100);
         this.gui.add(this.params, 'dim', [2, 3]).onChange(v => {
             if (this.simulation) this.simulation.dim = v;
         });
@@ -186,7 +188,7 @@ class App {
             if (this.options.autonomous) {
                 this.handleAutonomousBehavior();
             } else {
-                if (this.graph.nodes.length <= this.options.growthLimit) {
+                if (this.graph.nodes.length <= this.params.growthLimit) {
                     this.graph.grow();
                     if (this.status) this.status.innerText = `${this.graph.nodes.length} nodes`;
                 }
@@ -220,7 +222,7 @@ class App {
         }
         
         if (!this.transitioningOut) {
-            if (this.graph.nodes.length <= this.options.growthLimit) {
+            if (this.graph.nodes.length <= this.params.growthLimit) {
                 this.graph.grow();
                 if (this.status) this.status.innerText = `${this.graph.nodes.length} nodes (p=${this.graph.flipProb.toExponential(1)})`;
                 this.autoTimer = 0;
