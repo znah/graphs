@@ -17,15 +17,15 @@ class App {
         
         this.rules = [0x426, 0x8a2, 0x8ae, 0x886, 0x887, 0x8bc, 0x457, 0x26a, 0x409, 0x1016, 0x897, 0x4625, 0x4621, 0x6621, 0x56cc, 0xcbc, 0x3051, 0x1082, 0x289, 0x21f2];
         this.presets = {
-            'quartatic'         : {rule: 2182,  flipProb: 0.0},
-            'quartatic - mutations' : {rule: 2182,  flipProb: 5e-5},
+            'quadratic'         : {rule: 2182,  flipProb: 0.0},
+            'quadratic - mutations' : {rule: 2182,  flipProb: 5e-5},
             'two branches'      : {rule: 3260,  flipProb: 0.0},
-            'exp tree'              : {rule: 2236, flipProb: 0.0},
-            'exp hyper'   : {rule: 618, flipProb: 0.0},
-            'exp fractal'   : {rule: 649, flipProb: 0.0},
-            'exp symmethry'   : {rule: 1111, flipProb: 0.0},
-            'rubust linear'     : {rule: 22220, flipProb: 1e-3},
-            'stable explision'  : {rule: 8690,  flipProb: 1e-3},
+            'exp tree'          : {rule: 2236, flipProb: 0.0},
+            'exp hyper'         : {rule: 618, flipProb: 0.0},
+            'exp fractal'       : {rule: 649, flipProb: 0.0},
+            'exp symmetry'      : {rule: 1111, flipProb: 0.0},
+            'robust linear'     : {rule: 22220, flipProb: 1e-3},
+            'stable explosion'  : {rule: 8690,  flipProb: 1e-3},
             'fancy tentacles'   : {rule: 17953, flipProb: 5e-5},
         };
 
