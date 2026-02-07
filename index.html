@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Growing graphs</title>
+    <script src="graph.js"></script>
+    <script src="tree.js"></script>
+    <script src="force.js"></script>
+    <script src="swissgl.js"></script>
+    <script src="bloom.js"></script>
+    <script src="app.js"></script>
+    <script src="dat.gui.min.js"></script>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh;}
+        
+        #info-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 450px;
+            background: rgba(30, 30, 30, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            color: #fff;
+            z-index: 1000;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translate(-50%, -45%) scale(0.95); }
+            to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        }
+        
+        #info-popup h1 { margin: 0 0 15px; font-size: 24px; font-weight: 600; background: linear-gradient(135deg, #fff 0%, #aaa 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        #info-popup p { margin: 0 0 20px; line-height: 1.6; color: rgba(255, 255, 255, 0.8); font-size: 15px; }
+        #info-popup .author { font-size: 14px; color: rgba(255, 255, 255, 0.5); margin-bottom: 25px; }
+        #info-popup a { color: #5dade2; text-decoration: none; border-bottom: 1px solid rgba(93, 173, 226, 0.3); transition: all 0.2s; }
+        #info-popup a:hover { border-bottom-color: #5dade2; color: #fff; }
+        
+        #info-popup button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+            font-size: 15px;
+        }
+        
+        #info-popup button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255, 255, 255, 0.2); }
+        #info-popup button:active { transform: translateY(0); }
+        
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 999;
+            opacity: 0;
+            animation: fadeInOverlay 0.6s forwards;
+        }
+        
+        @keyframes fadeInOverlay { to { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <div id="overlay" class="overlay"></div>
+    <div id="info-popup">
+        <h1>Growing Graphs</h1>
+        <p>
+            An experimental simulation of emergent complexity, inspired by Paul Cousin's work on 
+            <a href="https://paulcousin.net/graph-rewriting-automata/introduction.html" target="_blank">Graph-Rewriting Automata</a>.
+        </p>
+        <div class="author">
+            By <a href="https://znah.net" target="_blank">Alex Mordvintsev</a> &bull; 
+            <a href="https://github.com/znah/graphs" target="_blank">GitHub</a> &bull;
+            <a href="alice.html">Autonomous Demo</a>
+        </div>
+        <button onclick="dismissPopup()">Explore</button>
+    </div>
+    
+    <canvas></canvas>
+    <div id="status" style="position: absolute; bottom: 10px; left: 10px; color: white; font-family: monospace; z-index: 100;">status</div>
+    <script>
+        "use strict";
+        function dismissPopup() {
+            document.getElementById('info-popup').style.display = 'none';
+            document.getElementById('overlay').style.display = 'none';
+        }
+        const canvas = document.querySelector('canvas');
+        const app = new App(canvas);
+        app.init();
+    </script>
+</body>
+</html>
