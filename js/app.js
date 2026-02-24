@@ -34,6 +34,10 @@ class App {
             flipProb: 0.0,
             growthLimit: this.options.growthLimit,
             dim: 2,
+            showOctree: false,
+            chargeMaxDist: 2000,
+            chargeStrength: -3.0,
+            velocityDecay: 0.1,
             preset: '-',
             reset: () => this.reset(),
         };
@@ -47,6 +51,16 @@ class App {
         this.gui.add(this.params, 'dim', [2, 3]).onChange(v => {
             if (this.simulation) this.simulation.dim = v;
         });
+        this.gui.add(this.params, 'chargeMaxDist', 0, 5000).onChange(v => {
+            if (this.simulation) this.simulation.chargeMaxDist = v;
+        });
+        this.gui.add(this.params, 'chargeStrength', -20, 20).onChange(v => {
+            if (this.simulation) this.simulation.chargeStrength = v;
+        });
+        this.gui.add(this.params, 'velocityDecay', 0.0, 1.0).onChange(v => {
+            if (this.simulation) this.simulation.velocityDecay = v;
+        });
+        this.gui.add(this.params, 'showOctree');
         this.gui.add(this.params, 'preset', Object.keys(this.presets)).onChange(name => {
             Object.assign(this.params, this.presets[name]);
             this.gui.updateDisplay();
@@ -75,6 +89,12 @@ class App {
         const response = await fetch('main.wasm');
         const buffer = await response.arrayBuffer();
         this.wasm = await WebAssembly.instantiate(buffer);
+        
+        const maxPoints = 65536;
+        const maxNodes = 65536;
+        const maxLinks = maxPoints * 8;
+        this.wasm.instance.exports.init(maxPoints, maxNodes, maxLinks);
+
         this.bloom = new Bloom(this.glsl, this.gui);
         
         if (this.options.autonomous) {
@@ -90,6 +110,9 @@ class App {
         this.graph = new GrowingGraph(this.params.rule);
         this.graph.flipProb = this.params.flipProb;
         this.simulation = new GraphLayout(this.graph, this.wasm.instance, this.params.dim);
+        this.simulation.chargeMaxDist = this.params.chargeMaxDist;
+        this.simulation.chargeStrength = this.params.chargeStrength;
+        this.simulation.velocityDecay = this.params.velocityDecay;
         
         this.autoTimer = 0;
         this.stallTimer = 0;
@@ -177,6 +200,18 @@ class App {
                 color *= 1.0+max(0.0, 1.0-(lastGen-p.w)/10.0);
                 VPos.xy = 1.9*(p.xy+XY*10.0)/(extent+30.);
             }`, FP: `vec4(color,1)*smoothstep(1.0, 0.8, length(XY))` }, target);
+            
+        if (this.params.showOctree) {
+            const { nodeCenter, nodeMass, nodeCount } = this.simulation;
+            const nodeCentersTex = this.glsl({}, { data: nodeCenter, size: [256, 256], format: 'rgb32f', tag: 'nodeCenters' });
+            const nodeMassTex = this.glsl({}, { data: nodeMass, size: [256, 256], format: 'r32f', tag: 'nodeMass' });
+            this.glsl({ ...renderData, nodeCentersTex, nodeMassTex, Grid: [nodeCount], VP: `
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                vec3 p = nodeCentersTex(id2xy(ID.x)).xyz-center;
+                float m = nodeMassTex(id2xy(ID.x)).x;
+                VPos.xy = 1.9*(p.xy + XY*sqrt(m)*4.0)/(extent+30.0);
+            `, FP: `vec4(1, 1, 1, 0.75)*smoothstep(1.0, 0.9, length(XY))` }, target);
+        }
 
         return target;
     }

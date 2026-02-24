@@ -1,14 +1,17 @@
 #include <wasm_simd128.h>
 #ifdef WASM
 #define sqrtf __builtin_sqrtf
+#else
+#include <math.h>
 #endif
 
 #ifdef WASM
     #define WASM_EXPORT(name) __attribute__((export_name(name)))
-    void * alloc(int size);
 #else
     #define WASM_EXPORT(name)
 #endif
+
+void * alloc(int size);
 
 #ifdef WASM
 #define PAGE_SIZE   0x10000
@@ -29,38 +32,71 @@ void * alloc(int size) {
 }
 #endif
 
-#define BUFFER(name, type, size) type name[size]; \
+#define BUFFER(name, type, size) type name[size] __attribute__((aligned(16))); \
   WASM_EXPORT("_get_"#name) type* get_##name() {return name;} \
   WASM_EXPORT("_len_"#name"__"#type) int get_##name##_len() {return (size);}
 
-#define DYNAMIC_BUFFER(name, type) type * name = NULL; int name##_len = 0; \
+#define DYNAMIC_BUFFER(name, type) type * name = 0; int name##_len = 0; \
   WASM_EXPORT("_get_"#name) type* get_##name() {return name;} \
   WASM_EXPORT("_len_"#name"__"#type) int get_##name##_len() {return (name##_len);} \
   void name##_alloc(int size) {name = (type*)alloc(size*sizeof(type)); name##_len = size;}
 
 
-#define max_point_n (1<<16)
-#define max_node_n (1<<16)
+DYNAMIC_BUFFER(sorted_x, v128_t);
+DYNAMIC_BUFFER(sorted_y, v128_t);
+DYNAMIC_BUFFER(sorted_z, v128_t);
+DYNAMIC_BUFFER(force_x, v128_t);
+DYNAMIC_BUFFER(force_y, v128_t);
+DYNAMIC_BUFFER(force_z, v128_t);
 
-BUFFER(sorted_points, float, max_point_n*3);
-BUFFER(forces, float, max_point_n*3);
+DYNAMIC_BUFFER(node_start, int);
+DYNAMIC_BUFFER(node_end, int);
+DYNAMIC_BUFFER(node_level, int);
+DYNAMIC_BUFFER(node_parent, int);
+DYNAMIC_BUFFER(node_next, int);
 
-BUFFER(node_start, int, max_node_n);
-BUFFER(node_end, int, max_node_n);
-BUFFER(node_level, int, max_node_n);
-BUFFER(node_parent, int, max_node_n);
-BUFFER(node_next, int, max_node_n);
+DYNAMIC_BUFFER(node_center, float);
+DYNAMIC_BUFFER(node_mass, float);
+DYNAMIC_BUFFER(node_extent, float);
+DYNAMIC_BUFFER(node_force, float);
 
-BUFFER(node_center, float, max_node_n*3);
-BUFFER(node_extent, float, max_node_n);
-BUFFER(node_force, float, max_node_n*3);
+DYNAMIC_BUFFER(points, float);
+DYNAMIC_BUFFER(vel, float);
+DYNAMIC_BUFFER(links, int);
+DYNAMIC_BUFFER(indices, int);
+DYNAMIC_BUFFER(sorted_morton, unsigned int);
+DYNAMIC_BUFFER(morton_and_indices, uint64_t);
 
-BUFFER(points, float, max_point_n*3);
-BUFFER(vel, float, max_point_n*3);
-BUFFER(links, int, max_point_n*8); // Assuming max 4 links per node on average
-BUFFER(indices, int, max_point_n);
-BUFFER(sorted_morton, unsigned int, max_point_n);
-BUFFER(morton_and_indices, uint64_t, max_point_n);
+WASM_EXPORT("init")
+void init(int max_point_n, int max_node_n, int max_link_n) {
+    // ensure alignment of vector types
+    max_point_n = (max_point_n + 3) & ~3;
+
+    sorted_x_alloc(max_point_n/4);
+    sorted_y_alloc(max_point_n/4);
+    sorted_z_alloc(max_point_n/4);
+    force_x_alloc(max_point_n/4);
+    force_y_alloc(max_point_n/4);
+    force_z_alloc(max_point_n/4);
+
+    node_start_alloc(max_node_n);
+    node_end_alloc(max_node_n);
+    node_level_alloc(max_node_n);
+    node_parent_alloc(max_node_n);
+    node_next_alloc(max_node_n);
+
+    node_center_alloc(max_node_n*3);
+    node_mass_alloc(max_node_n);
+    node_extent_alloc(max_node_n);
+    node_force_alloc(max_node_n*3);
+
+    points_alloc(max_point_n*3);
+    vel_alloc(max_point_n*3);
+    links_alloc(max_link_n);
+    indices_alloc(max_point_n);
+    sorted_morton_alloc(max_point_n);
+    morton_and_indices_alloc(max_point_n);
+}
 BUFFER(tree_center, float, 3);
 
 static float last_tree_extent = 0.0f;
@@ -173,9 +209,9 @@ int buildOctree(int pointN, int leafSize, int maxLevel) {
         int idx = (int)(morton_and_indices[i] & 0xFFFFFFFF);
         sorted_morton[i] = code;
         indices[i] = idx;
-        sorted_points[i*3]   = points[idx*3];
-        sorted_points[i*3+1] = points[idx*3+1];
-        sorted_points[i*3+2] = points[idx*3+2];
+        ((float*)sorted_x)[i] = points[idx*3];
+        ((float*)sorted_y)[i] = points[idx*3+1];
+        ((float*)sorted_z)[i] = points[idx*3+2];
     }
 
     _buildNode(0, 0, pointN, 0);
@@ -213,22 +249,11 @@ WASM_EXPORT("applyChargeForces")
 void applyChargeForces(int pointN, float strength) {
     for (int i = 0; i < pointN; i++) {
         int k = indices[i];
-        vel[k * 3]     += strength * forces[i * 3];
-        vel[k * 3 + 1] += strength * forces[i * 3 + 1];
-        vel[k * 3 + 2] += strength * forces[i * 3 + 2];
+        vel[k * 3]     += strength * ((float*)force_x)[i];
+        vel[k * 3 + 1] += strength * ((float*)force_y)[i];
+        vel[k * 3 + 2] += strength * ((float*)force_z)[i];
     }
 }
-
-
-// WASM_EXPORT("add_vectors")
-// void add_vectors(const float* a, const float* b, float* result, int len) {
-//     const v128_t * va = (const v128_t *)a;
-//     const v128_t * vb = (const v128_t *)b;
-//     v128_t * vr = (v128_t *)result;
-//     for (int i=0; i<len; ++i) {
-//         vr[i] = wasm_f32x4_add(va[i], vb[i]);
-//     }
-// }
 
 WASM_EXPORT("accumPoints")
 void accumPoints(int nodeN, float treeExtent) {
@@ -238,9 +263,9 @@ void accumPoints(int nodeN, float treeExtent) {
     for (int ni=nodeN-1; ni>=0; --ni) {
         if (node_next[ni] == ni+1) { // leaf
             for (int i=node_start[ni]; i<node_end[ni]; ++i) {
-                node_center[ni*3]   += sorted_points[i*3];
-                node_center[ni*3+1] += sorted_points[i*3+1];
-                node_center[ni*3+2] += sorted_points[i*3+2];
+                node_center[ni*3]   += ((float*)sorted_x)[i];
+                node_center[ni*3+1] += ((float*)sorted_y)[i];
+                node_center[ni*3+2] += ((float*)sorted_z)[i];
             }
         } 
         int parent = node_parent[ni];
@@ -251,6 +276,7 @@ void accumPoints(int nodeN, float treeExtent) {
     }
     for (int i=0; i<nodeN; ++i) {
         const float mass = (float)(node_end[i] - node_start[i]);
+        node_mass[i] = mass;
         node_center[i*3]   /= mass;
         node_center[i*3+1] /= mass;
         node_center[i*3+2] /= mass;
@@ -263,11 +289,12 @@ WASM_EXPORT("calcMultibodyForce")
 void calcMultibodyForce(int pointN, int nodeN, float maxDist) {
     const float theta2 = 0.81f; // Barnes-Hut theta squared
     const float maxDist2 = maxDist * maxDist;
+    const float min_c = 1.0f / (1.0f + maxDist2);
 
     for (int pointI = 0; pointI < pointN; ++pointI) {
-        const float x = sorted_points[pointI * 3];
-        const float y = sorted_points[pointI * 3 + 1];
-        const float z = sorted_points[pointI * 3 + 2];
+        const float x = ((float*)sorted_x)[pointI];
+        const float y = ((float*)sorted_y)[pointI];
+        const float z = ((float*)sorted_z)[pointI];
         float fx = 0.0f, fy = 0.0f, fz = 0.0f;
 
         for (int nodeI = 0; nodeI < nodeN;) {
@@ -280,27 +307,29 @@ void calcMultibodyForce(int pointN, int nodeN, float maxDist) {
             if (w * w < theta2 * l2) { // Far enough, treat as a single body (Barnes-Hut approximation)
                 if (l2 < maxDist2) { // but not too far
                     const float mass = (float)(node_end[nodeI] - node_start[nodeI]); // mass is number of points
-                    const float c = mass / (1.0f + l2); // force magnitude
+                    const float c = mass * (1.0f / (1.0f + l2) - min_c); // force magnitude
                     fx += c*dx; fy += c*dy; fz += c*dz;
                 }
                 nodeI = node_next[nodeI]; // Skip to next sibling or ancestor's sibling
             } else { // Too close, traverse children or individual points
                 if (node_next[nodeI] == nodeI + 1 && l2 < maxDist2) { // It's a leaf node and not too far
                     for (int i = node_start[nodeI]; i < node_end[nodeI]; ++i) {
-                        const float p_dx = sorted_points[i * 3] - x;
-                        const float p_dy = sorted_points[i * 3 + 1] - y;
-                        const float p_dz = sorted_points[i * 3 + 2] - z;
+                        const float p_dx = ((float*)sorted_x)[i] - x;
+                        const float p_dy = ((float*)sorted_y)[i] - y;
+                        const float p_dz = ((float*)sorted_z)[i] - z;
                         const float p_l2 = p_dx * p_dx + p_dy * p_dy + p_dz * p_dz;
-                        const float c = 1.0f / (1.0f + p_l2);
-                        fx += c * p_dx; fy += c * p_dy; fz += c * p_dz;
+                        if (p_l2 < maxDist2) {
+                            const float c = 1.0f / (1.0f + p_l2) - min_c;
+                            fx += c * p_dx; fy += c * p_dy; fz += c * p_dz;
+                        }
                     }
                 }
                 ++nodeI;
             }
         }
-        forces[pointI * 3]     = fx;
-        forces[pointI * 3 + 1] = fy;
-        forces[pointI * 3 + 2] = fz;
+        ((float*)force_x)[pointI] = fx;
+        ((float*)force_y)[pointI] = fy;
+        ((float*)force_z)[pointI] = fz;
     }
 }
 
@@ -309,12 +338,24 @@ WASM_EXPORT("calcMultibodyForceDual")
 void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
     const float theta2 = 0.81f; // Barnes-Hut theta squared
     const float maxDist2 = maxDist * maxDist;
+    const v128_t v_maxDist2 = wasm_f32x4_splat(maxDist2);
+    const v128_t v_one = wasm_f32x4_splat(1.0f);
+    const v128_t v_zero = wasm_f32x4_splat(0.0f);
+    const float min_c = 1.0f / (1.0f + maxDist2);
+    const v128_t v_min_c = wasm_f32x4_splat(min_c);
+    const v128_t v_lane_offsets = wasm_f32x4_make(0.0f, 1.0f, 2.0f, 3.0f);
 
-    // Reset forces
-    for (int i = 0; i < pointN * 3; ++i) {
-        forces[i] = 0.0f;
+    // Reset forces using SIMD
+    int vN = (pointN + 3) / 4;
+    for (int i = 0; i < vN; i++) {
+        force_x[i] = force_y[i] = force_z[i] = v_zero;
     }
-    for (int i = 0; i < nodeN * 3; ++i) {
+
+    int n3 = nodeN * 3;
+    for (int i = 0; i < (n3 & ~3); i += 4) {
+        wasm_v128_store(&node_force[i], v_zero);
+    }
+    for (int i = (n3 & ~3); i < n3; ++i) {
         node_force[i] = 0.0f;
     }
 
@@ -347,7 +388,7 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
             if (l2 < maxDist2) {
                 const float massA = (float)(node_end[niA] - node_start[niA]);
                 const float massB = (float)(node_end[niB] - node_start[niB]);
-                const float common = 1.0f / (1.0f + l2);
+                const float common = 1.0f / (1.0f + l2) - min_c;
                 
                 const float ca = massB * common;
                 node_force[niA * 3]     += ca * dx;
@@ -365,25 +406,75 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
 
             if (leafA && leafB) {
                 for (int i = node_start[niA]; i < node_end[niA]; ++i) {
-                    const float ix = sorted_points[i * 3];
-                    const float iy = sorted_points[i * 3 + 1];
-                    const float iz = sorted_points[i * 3 + 2];
-                    const int jStart = (niA == niB) ? i + 1 : node_start[niB];
-                    for (int j = jStart; j < node_end[niB]; ++j) {
-                        const float pdx = sorted_points[j * 3]     - ix;
-                        const float pdy = sorted_points[j * 3 + 1] - iy;
-                        const float pdz = sorted_points[j * 3 + 2] - iz;
-                        const float pl2 = pdx * pdx + pdy * pdy + pdz * pdz;
-                        if (pl2 < maxDist2) {
-                            const float c = 1.0f / (1.0f + pl2);
-                            forces[i * 3]     += c * pdx;
-                            forces[i * 3 + 1] += c * pdy;
-                            forces[i * 3 + 2] += c * pdz;
-                            forces[j * 3]     -= c * pdx;
-                            forces[j * 3 + 1] -= c * pdy;
-                            forces[j * 3 + 2] -= c * pdz;
-                        }
+                    const float ix = ((float*)sorted_x)[i];
+                    const float iy = ((float*)sorted_y)[i];
+                    const float iz = ((float*)sorted_z)[i];
+                    const v128_t v_ix = wasm_f32x4_splat(ix);
+                    const v128_t v_iy = wasm_f32x4_splat(iy);
+                    const v128_t v_iz = wasm_f32x4_splat(iz);
+
+                    v128_t v_ifx = v_zero;
+                    v128_t v_ify = v_zero;
+                    v128_t v_ifz = v_zero;
+
+                    int j_start = (niA == niB) ? i + 1 : node_start[niB];
+                    int j_end = node_end[niB];
+
+                    int vj_start = j_start >> 2;
+                    int vj_end = (j_end + 3) >> 2;
+
+                    v128_t v_j_start = wasm_f32x4_splat((float)j_start);
+                    v128_t v_j_end = wasm_f32x4_splat((float)j_end);
+
+                    for (int vj = vj_start; vj < vj_end; ++vj) {
+                        v128_t v_jx = sorted_x[vj];
+                        v128_t v_jy = sorted_y[vj];
+                        v128_t v_jz = sorted_z[vj];
+
+                        v128_t v_dx = wasm_f32x4_sub(v_jx, v_ix);
+                        v128_t v_dy = wasm_f32x4_sub(v_jy, v_iy);
+                        v128_t v_dz = wasm_f32x4_sub(v_jz, v_iz);
+
+                        v128_t v_l2 = wasm_f32x4_add(wasm_f32x4_mul(v_dx, v_dx),
+                                      wasm_f32x4_add(wasm_f32x4_mul(v_dy, v_dy),
+                                                     wasm_f32x4_mul(v_dz, v_dz)));
+
+                        v128_t v_j_idx = wasm_f32x4_add(wasm_f32x4_splat((float)(vj * 4)), v_lane_offsets);
+                        v128_t v_range_mask = wasm_v128_and(
+                            wasm_f32x4_ge(v_j_idx, v_j_start),
+                            wasm_f32x4_lt(v_j_idx, v_j_end)
+                        );
+
+                        v128_t v_dist_mask = wasm_f32x4_lt(v_l2, v_maxDist2);
+                        v128_t v_mask = wasm_v128_and(v_range_mask, v_dist_mask);
+
+                        v128_t v_c = wasm_f32x4_div(v_one, wasm_f32x4_add(v_one, v_l2));
+                        v_c = wasm_f32x4_sub(v_c, v_min_c);
+                        v_c = wasm_v128_and(v_c, v_mask);
+
+                        v128_t v_dfx = wasm_f32x4_mul(v_c, v_dx);
+                        v128_t v_dfy = wasm_f32x4_mul(v_c, v_dy);
+                        v128_t v_dfz = wasm_f32x4_mul(v_c, v_dz);
+
+                        v_ifx = wasm_f32x4_add(v_ifx, v_dfx);
+                        v_ify = wasm_f32x4_add(v_ify, v_dfy);
+                        v_ifz = wasm_f32x4_add(v_ifz, v_dfz);
+
+                        force_x[vj] = wasm_f32x4_sub(force_x[vj], v_dfx);
+                        force_y[vj] = wasm_f32x4_sub(force_y[vj], v_dfy);
+                        force_z[vj] = wasm_f32x4_sub(force_z[vj], v_dfz);
                     }
+
+                    // Horizontal sum for point i
+                    float ifx = wasm_f32x4_extract_lane(v_ifx, 0) + wasm_f32x4_extract_lane(v_ifx, 1) + 
+                               wasm_f32x4_extract_lane(v_ifx, 2) + wasm_f32x4_extract_lane(v_ifx, 3);
+                    float ify = wasm_f32x4_extract_lane(v_ify, 0) + wasm_f32x4_extract_lane(v_ify, 1) + 
+                               wasm_f32x4_extract_lane(v_ify, 2) + wasm_f32x4_extract_lane(v_ify, 3);
+                    float ifz = wasm_f32x4_extract_lane(v_ifz, 0) + wasm_f32x4_extract_lane(v_ifz, 1) + 
+                               wasm_f32x4_extract_lane(v_ifz, 2) + wasm_f32x4_extract_lane(v_ifz, 3);
+                    ((float*)force_x)[i] += ifx;
+                    ((float*)force_y)[i] += ify;
+                    ((float*)force_z)[i] += ifz;
                 }
             } else if (niA == niB) {
                 // Self-interaction: recurse on unique children pairs
@@ -421,10 +512,20 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
             const float fx = node_force[ni * 3];
             const float fy = node_force[ni * 3 + 1];
             const float fz = node_force[ni * 3 + 2];
-            for (int i = node_start[ni]; i < node_end[ni]; ++i) {
-                forces[i * 3]     += fx;
-                forces[i * 3 + 1] += fy;
-                forces[i * 3 + 2] += fz;
+            const v128_t v_fx = wasm_f32x4_splat(fx);
+            const v128_t v_fy = wasm_f32x4_splat(fy);
+            const v128_t v_fz = wasm_f32x4_splat(fz);
+
+            int i = node_start[ni];
+            int i_end = node_end[ni];
+            for (; i + 3 < i_end; i += 4) {
+                int vi = i / 4;
+                force_x[vi] = wasm_f32x4_add(force_x[vi], v_fx);
+                force_y[vi] = wasm_f32x4_add(force_y[vi], v_fy);
+                force_z[vi] = wasm_f32x4_add(force_z[vi], v_fz);
+            }
+            for (; i < i_end; ++i) {
+                ((float*)force_x)[i] += fx; ((float*)force_y)[i] += fy; ((float*)force_z)[i] += fz;
             }
         }
     }
