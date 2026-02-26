@@ -5,6 +5,17 @@
 #include <math.h>
 #endif
 
+static inline float wasm_f32x4_hsum(v128_t v) {
+#if defined(__wasm_simd128__)
+    v = wasm_f32x4_add(v, wasm_i32x4_shuffle(v, v, 1, 0, 3, 2));
+    v = wasm_f32x4_add(v, wasm_i32x4_shuffle(v, v, 2, 3, 0, 1));
+    return wasm_f32x4_extract_lane(v, 0);
+#else
+    return wasm_f32x4_extract_lane(v, 0) + wasm_f32x4_extract_lane(v, 1) + 
+           wasm_f32x4_extract_lane(v, 2) + wasm_f32x4_extract_lane(v, 3);
+#endif
+}
+
 #ifdef WASM
     #define WASM_EXPORT(name) __attribute__((export_name(name)))
 #else
@@ -56,6 +67,8 @@ DYNAMIC_BUFFER(node_parent, int);
 DYNAMIC_BUFFER(node_next, int);
 
 DYNAMIC_BUFFER(node_center, float);
+DYNAMIC_BUFFER(node_min, float);
+DYNAMIC_BUFFER(node_max, float);
 DYNAMIC_BUFFER(node_mass, float);
 DYNAMIC_BUFFER(node_extent, float);
 DYNAMIC_BUFFER(node_force, float);
@@ -86,6 +99,8 @@ void init(int max_point_n, int max_node_n, int max_link_n) {
     node_next_alloc(max_node_n);
 
     node_center_alloc(max_node_n*3);
+    node_min_alloc(max_node_n*3);
+    node_max_alloc(max_node_n*3);
     node_mass_alloc(max_node_n);
     node_extent_alloc(max_node_n);
     node_force_alloc(max_node_n*3);
@@ -259,13 +274,25 @@ WASM_EXPORT("accumPoints")
 void accumPoints(int nodeN, float treeExtent) {
     for (int i=0; i<nodeN*3; ++i) {
         node_center[i] = 0.0f;
+        node_min[i] = 1e30f;
+        node_max[i] = -1e30f;
     }
     for (int ni=nodeN-1; ni>=0; --ni) {
         if (node_next[ni] == ni+1) { // leaf
             for (int i=node_start[ni]; i<node_end[ni]; ++i) {
-                node_center[ni*3]   += ((float*)sorted_x)[i];
-                node_center[ni*3+1] += ((float*)sorted_y)[i];
-                node_center[ni*3+2] += ((float*)sorted_z)[i];
+                float px = ((float*)sorted_x)[i];
+                float py = ((float*)sorted_y)[i];
+                float pz = ((float*)sorted_z)[i];
+                node_center[ni*3]   += px;
+                node_center[ni*3+1] += py;
+                node_center[ni*3+2] += pz;
+                
+                if (px < node_min[ni*3]) node_min[ni*3] = px;
+                if (px > node_max[ni*3]) node_max[ni*3] = px;
+                if (py < node_min[ni*3+1]) node_min[ni*3+1] = py;
+                if (py > node_max[ni*3+1]) node_max[ni*3+1] = py;
+                if (pz < node_min[ni*3+2]) node_min[ni*3+2] = pz;
+                if (pz > node_max[ni*3+2]) node_max[ni*3+2] = pz;
             }
         } 
         int parent = node_parent[ni];
@@ -273,6 +300,13 @@ void accumPoints(int nodeN, float treeExtent) {
         node_center[parent*3]   += node_center[ni*3];
         node_center[parent*3+1] += node_center[ni*3+1];
         node_center[parent*3+2] += node_center[ni*3+2];
+        
+        if (node_min[ni*3]   < node_min[parent*3])   node_min[parent*3]   = node_min[ni*3];
+        if (node_max[ni*3]   > node_max[parent*3])   node_max[parent*3]   = node_max[ni*3];
+        if (node_min[ni*3+1] < node_min[parent*3+1]) node_min[parent*3+1] = node_min[ni*3+1];
+        if (node_max[ni*3+1] > node_max[parent*3+1]) node_max[parent*3+1] = node_max[ni*3+1];
+        if (node_min[ni*3+2] < node_min[parent*3+2]) node_min[parent*3+2] = node_min[ni*3+2];
+        if (node_max[ni*3+2] > node_max[parent*3+2]) node_max[parent*3+2] = node_max[ni*3+2];
     }
     for (int i=0; i<nodeN; ++i) {
         const float mass = (float)(node_end[i] - node_start[i]);
@@ -280,7 +314,14 @@ void accumPoints(int nodeN, float treeExtent) {
         node_center[i*3]   /= mass;
         node_center[i*3+1] /= mass;
         node_center[i*3+2] /= mass;
-        node_extent[i] = treeExtent / (1<<node_level[i]);
+        
+        float dx = node_max[i*3] - node_min[i*3];
+        float dy = node_max[i*3+1] - node_min[i*3+1];
+        float dz = node_max[i*3+2] - node_min[i*3+2];
+        float max_d = dx;
+        if (dy > max_d) max_d = dy;
+        if (dz > max_d) max_d = dz;
+        node_extent[i] = max_d;
     }
 }
 
@@ -363,7 +404,8 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
 
     // Stack for dual tree traversal pairs
     typedef struct { int a; int b; } NodePair;
-    NodePair stack[4096];
+    enum { MAX_STACK = 256 };
+    NodePair stack[MAX_STACK];
     int top = 0;
 
     // Start with root vs root
@@ -466,32 +508,26 @@ void calcMultibodyForceDual(int pointN, int nodeN, float maxDist) {
                     }
 
                     // Horizontal sum for point i
-                    float ifx = wasm_f32x4_extract_lane(v_ifx, 0) + wasm_f32x4_extract_lane(v_ifx, 1) + 
-                               wasm_f32x4_extract_lane(v_ifx, 2) + wasm_f32x4_extract_lane(v_ifx, 3);
-                    float ify = wasm_f32x4_extract_lane(v_ify, 0) + wasm_f32x4_extract_lane(v_ify, 1) + 
-                               wasm_f32x4_extract_lane(v_ify, 2) + wasm_f32x4_extract_lane(v_ify, 3);
-                    float ifz = wasm_f32x4_extract_lane(v_ifz, 0) + wasm_f32x4_extract_lane(v_ifz, 1) + 
-                               wasm_f32x4_extract_lane(v_ifz, 2) + wasm_f32x4_extract_lane(v_ifz, 3);
-                    ((float*)force_x)[i] += ifx;
-                    ((float*)force_y)[i] += ify;
-                    ((float*)force_z)[i] += ifz;
+                    ((float*)force_x)[i] += wasm_f32x4_hsum(v_ifx);
+                    ((float*)force_y)[i] += wasm_f32x4_hsum(v_ify);
+                    ((float*)force_z)[i] += wasm_f32x4_hsum(v_ifz);
                 }
             } else if (niA == niB) {
                 // Self-interaction: recurse on unique children pairs
                 for (int m = niA + 1; m < node_next[niA]; m = node_next[m]) {
                     for (int n = m; n < node_next[niA]; n = node_next[n]) {
-                        if (top < 4096) stack[top++] = (NodePair){m, n};
+                        if (top < MAX_STACK) stack[top++] = (NodePair){m, n};
                     }
                 }
             } else if (!leafA && (leafB || wA >= wB)) {
                 // Split larger node A
                 for (int m = niA + 1; m < node_next[niA]; m = node_next[m]) {
-                    if (top < 4096) stack[top++] = (NodePair){m, niB};
+                    if (top < MAX_STACK) stack[top++] = (NodePair){m, niB};
                 }
             } else {
                 // Split larger node B
                 for (int m = niB + 1; m < node_next[niB]; m = node_next[m]) {
-                    if (top < 4096) stack[top++] = (NodePair){niA, m};
+                    if (top < MAX_STACK) stack[top++] = (NodePair){niA, m};
                 }
             }
         }

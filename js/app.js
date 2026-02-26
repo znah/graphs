@@ -51,7 +51,7 @@ class App {
         this.gui.add(this.params, 'dim', [2, 3]).onChange(v => {
             if (this.simulation) this.simulation.dim = v;
         });
-        this.gui.add(this.params, 'chargeMaxDist', 0, 5000).onChange(v => {
+        this.gui.add(this.params, 'chargeMaxDist', 0, 10000).onChange(v => {
             if (this.simulation) this.simulation.chargeMaxDist = v;
         });
         this.gui.add(this.params, 'chargeStrength', -20, 20).onChange(v => {
@@ -83,6 +83,25 @@ class App {
         this.consecutiveExplosions = 0;
 
         this.status = document.getElementById('status');
+        
+        this.rot = { x: 0, y: 0 };
+        this.isDragging = false;
+        this.lastMouse = { x: 0, y: 0 };
+        
+        this.canvas.addEventListener('pointerdown', e => {
+            if (this.params.dim != 3) return;
+            this.isDragging = true;
+            this.lastMouse = { x: e.clientX, y: e.clientY };
+        });
+        window.addEventListener('pointermove', e => {
+            if (!this.isDragging || this.params.dim != 3) return;
+            const dx = e.clientX - this.lastMouse.x;
+            const dy = e.clientY - this.lastMouse.y;
+            this.rot.x += dy * 0.01;
+            this.rot.y += dx * 0.01;
+            this.lastMouse = { x: e.clientX, y: e.clientY };
+        });
+        window.addEventListener('pointerup', () => this.isDragging = false);
     }
 
     async init() {
@@ -109,7 +128,8 @@ class App {
     reset() {
         this.graph = new GrowingGraph(this.params.rule);
         this.graph.flipProb = this.params.flipProb;
-        this.simulation = new GraphLayout(this.graph, this.wasm.instance, this.params.dim);
+        this.simulation = new GraphLayout(this.wasm.instance, this.params.dim);
+        this.simulation.updateData(this.graph.nodes.length, this.graph.links, this.graph.addedHints);
         this.simulation.chargeMaxDist = this.params.chargeMaxDist;
         this.simulation.chargeStrength = this.params.chargeStrength;
         this.simulation.velocityDecay = this.params.velocityDecay;
@@ -164,23 +184,39 @@ class App {
         const linkN = this.graph.links.length / 2;
         this.links.set(this.graph.links);
         
+        const Inc = `
+            vec3 rotate(vec3 p) {
+                p = erot(p, vec3(1,0,0), rot.x);
+                p = erot(p, vec3(0,1,0), rot.y);
+                return p;
+            }
+            vec2 mapXY(vec2 p) {
+                return 1.9 * p / (extent + 30.0);
+            }
+            vec2 w2s(vec3 p) {
+                return mapXY(rotate(p).xy);
+            }
+        `;
+
         const renderData = {
+            Inc,
             pointsTex: this.glsl({}, { data: this.points, size: [256, 256], format: 'rgba32f', tag: 'points' }),
             linksTex: this.glsl({}, { data: this.links, size: [256, 256], format: 'rg32i', tag: 'links' }),
-            center, extent: treeExtent, lastGen, Blend: 's*sa+d*(1-sa)', Aspect: 'fit'
+            center, extent: treeExtent, lastGen, Blend: 's*sa+d*(1-sa)', Aspect: 'fit',
+            rot: [this.rot.x, this.rot.y]
         };
 
-        this.glsl({ ...renderData, Grid: [linkN], VP: `
+        this.glsl({ ...renderData, Grid: [linkN], DepthTest:1, VP: `
             #define id2xy(id) ivec2((id)&0xff, (id)>>8)
             ivec2 link = linksTex(id2xy(ID.x)).xy;
-            vec3 p0 = pointsTex(id2xy(link.x)).xyz-center;
-            vec3 p1 = pointsTex(id2xy(link.y)).xyz-center;
+            vec3 p0 = rotate(pointsTex(id2xy(link.x)).xyz-center);
+            vec3 p1 = rotate(pointsTex(id2xy(link.y)).xyz-center);
             vec2 dp = normalize(p1.xy-p0.xy);
             vec2 p = mix(p0, p1, UV.x).xy + vec2(-dp.y, dp.x)*XY.y;
-            VPos.xy = 1.9*p.xy/(extent+30.);
+            VPos.xy = mapXY(p);
         `, FP: `0.9` }, target);
 
-        this.glsl({ ...renderData, Grid: [pointN], VP: `
+        this.glsl({ ...renderData, Grid: [pointN], DepthTest:1, VP: `
             vec3 color_map(float t) {
                 const vec3 c0 = vec3(0.06, 0.02, 0.54);
                 const vec3 c1 = vec3(2.18, 0.24, 0.75);
@@ -194,22 +230,47 @@ class App {
             void vertex() {
                 #define id2xy(id) ivec2((id)&0xff, (id)>>8)
                 vec4 p = pointsTex(id2xy(ID.x));
-                p.xyz -= center;
+                p.xyz = rotate(p.xyz - center);
                 varying vec3 color = color_map(p.w/(lastGen+1.));
                 color = min(color, 0.9);
                 color *= 1.0+max(0.0, 1.0-(lastGen-p.w)/10.0);
-                VPos.xy = 1.9*(p.xy+XY*10.0)/(extent+30.);
+                VPos.xy = mapXY(p.xy + XY * 10.0);
             }`, FP: `vec4(color,1)*smoothstep(1.0, 0.8, length(XY))` }, target);
             
         if (this.params.showOctree) {
-            const { nodeCenter, nodeMass, nodeCount } = this.simulation;
+            const { nodeCenter, nodeMin, nodeMax, nodeMass, nodeParent, nodeCount } = this.simulation;
             const nodeCentersTex = this.glsl({}, { data: nodeCenter, size: [256, 256], format: 'rgb32f', tag: 'nodeCenters' });
+            const nodeMinTex = this.glsl({}, { data: nodeMin, size: [256, 256], format: 'rgb32f', tag: 'nodeMin' });
+            const nodeMaxTex = this.glsl({}, { data: nodeMax, size: [256, 256], format: 'rgb32f', tag: 'nodeMax' });
             const nodeMassTex = this.glsl({}, { data: nodeMass, size: [256, 256], format: 'r32f', tag: 'nodeMass' });
-            this.glsl({ ...renderData, nodeCentersTex, nodeMassTex, Grid: [nodeCount], VP: `
+            const nodeParentsTex = this.glsl({}, { data: nodeParent, size: [256, 256], format: 'r32i', tag: 'nodeParents' });
+            
+            this.glsl({ ...renderData, nodeMinTex, nodeMaxTex, DepthTest:1, Grid:[nodeCount], VP: `
                 #define id2xy(id) ivec2((id)&0xff, (id)>>8)
-                vec3 p = nodeCentersTex(id2xy(ID.x)).xyz-center;
+                vec3 pMin = nodeMinTex(id2xy(ID.x)).xyz - center;
+                vec3 pMax = nodeMaxTex(id2xy(ID.x)).xyz - center;
+                VPos.xy = w2s(mix(pMin, pMax, UV.xyx));
+            `, FP: `
+                vec2 d = 1.0-abs(XY);
+                d = clamp(1.0-0.5*d/fwidth(d), 0.0, 1.0)*0.5;
+                FOut = vec4(d.x+d.y);
+            ` }, target);
+
+            this.glsl({ ...renderData, nodeCentersTex, nodeParentsTex, DepthTest:1, Grid:[nodeCount], VP: `
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                int parent = nodeParentsTex(id2xy(ID.x)).x;
+                vec3 p0 = rotate(nodeCentersTex(id2xy(parent)).xyz-center);
+                vec3 p1 = rotate(nodeCentersTex(id2xy(ID.x)).xyz-center);
+                vec2 dp = normalize(p1.xy-p0.xy);
+                vec2 p = mix(p0, p1, UV.x).xy + vec2(-dp.y, dp.x)*XY.y*2.;
+                VPos.xy = mapXY(p);
+            `, FP: `vec4(0.5, 1, 0.5, 0.8)` }, target);
+
+            this.glsl({ ...renderData, nodeCentersTex, nodeMassTex, DepthTest:1, Grid:[nodeCount], VP: `
+                #define id2xy(id) ivec2((id)&0xff, (id)>>8)
+                vec3 p = rotate(nodeCentersTex(id2xy(ID.x)).xyz-center);
                 float m = nodeMassTex(id2xy(ID.x)).x;
-                VPos.xy = 1.9*(p.xy + XY*sqrt(m)*4.0)/(extent+30.0);
+                VPos.xy = mapXY(p.xy + XY * sqrt(m) * 4.0);
             `, FP: `vec4(1, 1, 1, 0.75)*smoothstep(1.0, 0.9, length(XY))` }, target);
         }
 
@@ -225,6 +286,7 @@ class App {
             } else {
                 if (this.graph.nodes.length <= this.params.growthLimit) {
                     this.graph.grow();
+                    if (this.simulation) this.simulation.updateData(this.graph.nodes.length, this.graph.links, this.graph.addedHints);
                     if (this.status) this.status.innerText = `${this.graph.nodes.length} nodes`;
                 }
             }
@@ -259,6 +321,7 @@ class App {
         if (!this.transitioningOut) {
             if (this.graph.nodes.length <= this.params.growthLimit) {
                 this.graph.grow();
+                if (this.simulation) this.simulation.updateData(this.graph.nodes.length, this.graph.links, this.graph.addedHints);
                 if (this.status) this.status.innerText = `${this.graph.nodes.length} nodes (p=${this.graph.flipProb.toExponential(1)})`;
                 this.autoTimer = 0;
                 

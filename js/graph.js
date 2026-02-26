@@ -43,6 +43,7 @@ class GrowingGraph {
         const {nodes, states, rule, flipProb} = this;
 
         if (this.phase === 0) { // update states
+            this.addedHints = {};
             calcCases(nodes, states).forEach((r,i)=>{
                 this.states[i] = (rule >> r) & 1;
                 this.dividing[i] = (rule >> (r+CaseN)) & 1;
@@ -64,6 +65,9 @@ class GrowingGraph {
                 this.reconnect(c, i, k);
                 nodes[i].gen = nodes[j].gen = nodes[k].gen = this.lastGen;
                 this.dividing[i] = 0;
+                
+                this.addedHints[j] = [i, b];
+                this.addedHints[k] = [i, c];
             }
             this.links = this.updateLinks();
         }

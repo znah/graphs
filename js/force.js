@@ -34,9 +34,7 @@ function prepareWASM(instance) {
 }
 
 class GraphLayout {
-    constructor(graph, wasm, dim=2) {
-        this.graph = graph;
-        this.nodes = graph.nodes;
+    constructor(wasm, dim=2) {
         this.wasm = prepareWASM(wasm);
         this.dim = dim;
         this.velocityDecay = 0.1;
@@ -54,15 +52,15 @@ class GraphLayout {
         // Expose octree buffers for visualization
         this.nodeCount = 0;
         this.nodeCenter = this.wasm.node_center;
+        this.nodeMin = this.wasm.node_min;
+        this.nodeMax = this.wasm.node_max;
         this.nodeMass = this.wasm.node_mass;
         this.nodeExtent = this.wasm.node_extent;
+        this.nodeParent = this.wasm.node_parent;
     }
 
     linkForce() {
-        const {graph, linkStrength, linkDistance} = this;
-        const links = graph.links;
-        this.wasm.links.set(links);
-        this.wasm.linkForce(links.length / 2, linkStrength, linkDistance);
+        this.wasm.linkForce(this.linkN, this.linkStrength, this.linkDistance);
     }
 
     chargeForce() {
@@ -74,32 +72,36 @@ class GraphLayout {
         this.treeCenter = this.wasm.tree_center; // From BUFFER(tree_center, ...)
 
         this.wasm.accumPoints(this.nodeCount, this.treeExtent);
-
-        //this.wasm.calcMultibodyForce(pointN, nodeN, this.chargeMaxDist);
         this.wasm.calcMultibodyForceDual(pointN, this.nodeCount, this.chargeMaxDist);
-        
         this.wasm.applyChargeForces(pointN, this.chargeStrength);
     }
 
-    tick(step_n=1) {
-        const {dim} = this;
-        const f = 1.0-this.velocityDecay;
-        const rnd = ()=>(Math.random()-0.5);
-        // init new points
-        for (let i=this.pointN; i<this.graph.nodeN; ++i) {
-            let nn = 0;
-            let x=rnd(), y=rnd(), z=dim==3 ? rnd() : 0.0;
-            for (const j of this.nodes[i]) {
-                if (j>=this.pointN) continue; // skip new points
-                let p=j*3; nn++;
-                x+=this.pos[p]; y+=this.pos[p+1]; z+=this.pos[p+2];
-            }
-            if (nn>1) {x/=nn; y/=nn; z/=nn;}
-            let p=i*3; this.pos[p]=x; this.pos[p+1]=y; this.pos[p+2]=z;
-        }
-        this.pointN = this.graph.nodeN;
+    updateData(newNodeCount, links, newNodesParents) {
+        this.linkN = links.length / 2;
+        this.wasm.links.set(links);
 
-        // apply forces
+        // init new points
+        const {dim} = this;
+        const rnd = ()=>(Math.random()-0.5);
+        if (this.pointN < newNodeCount) {
+            for (let i=this.pointN; i<newNodeCount; ++i) {
+                let nn = 0;
+                let x=rnd(), y=rnd(), z=dim==3 ? rnd() : 0.0;
+                let hintArray = (newNodesParents && newNodesParents[i]) ? newNodesParents[i] : [];
+                for (const j of hintArray) {
+                    if (j>=this.pointN) continue; // skip new points
+                    let p=j*3; nn++;
+                    x+=this.pos[p]; y+=this.pos[p+1]; z+=this.pos[p+2];
+                }
+                if (nn>1) {x/=nn; y/=nn; z/=nn;}
+                let p=i*3; this.pos[p]=x; this.pos[p+1]=y; this.pos[p+2]=z;
+            }
+            this.pointN = newNodeCount;
+        }
+    }
+
+    tick(step_n=1) {
+        const f = 1.0-this.velocityDecay;
         for (let k=0; k<step_n; ++k) {
             for (let i=0; i<this.linkIterN; ++i) this.linkForce();
             this.chargeForce();
