@@ -44,6 +44,7 @@ class GrowingGraph {
         if (nodes.length >= limit) return this;
 
         if (this.phase === 0) { // update states
+            ++this.lastGen;
             this.addedHints = {};
             calcCases(nodes, states).forEach((r,i)=>{
                 this.states[i] = (rule >> r) & 1;
@@ -53,9 +54,12 @@ class GrowingGraph {
                 }
              });
         } else {
-            ++this.lastGen;
+            let hitLimit = false;
             for (let i=0; i < this.dividing.length; ++i) {
-                if (nodes.length >= limit) break;
+                if (nodes.length >= limit) {
+                    hitLimit = true;
+                    break;
+                }
                 if (!this.dividing[i]) continue;
                 const [a,b,c] = nodes[i];
                 const j=nodes.length, k=j+1;
@@ -72,6 +76,7 @@ class GrowingGraph {
                 this.addedHints[k] = [i, c];
             }
             this.links = this.updateLinks();
+            if (hitLimit) return this;
         }
         this.phase = 1-this.phase;
         return this;
