@@ -39,8 +39,9 @@ class GrowingGraph {
         node[node.indexOf(oldPeer)] = newPeer;
     }
 
-    grow() {
+    grow(limit) {
         const {nodes, states, rule, flipProb} = this;
+        if (nodes.length >= limit) return this;
 
         if (this.phase === 0) { // update states
             this.addedHints = {};
@@ -54,6 +55,7 @@ class GrowingGraph {
         } else {
             ++this.lastGen;
             for (let i=0; i < this.dividing.length; ++i) {
+                if (nodes.length >= limit) break;
                 if (!this.dividing[i]) continue;
                 const [a,b,c] = nodes[i];
                 const j=nodes.length, k=j+1;

@@ -107,7 +107,7 @@ void init(int max_point_n, int max_node_n, int max_link_n) {
 
     points_alloc(max_point_n*3);
     vel_alloc(max_point_n*3);
-    links_alloc(max_link_n);
+    links_alloc(max_link_n*2);
     indices_alloc(max_point_n);
     sorted_morton_alloc(max_point_n);
     morton_and_indices_alloc(max_point_n);
@@ -237,18 +237,23 @@ int buildOctree(int pointN, int leafSize, int maxLevel) {
 
 WASM_EXPORT("linkForce")
 void linkForce(int linkN, float linkStrength, float linkDistance) {
-    for (int p = 0; p < linkN * 2; p += 2) {
-        int i = links[p], j = links[p+1];
-        float dx = points[j*3]   + vel[j*3]   - points[i*3]   - vel[i*3];
-        float dy = points[j*3+1] + vel[j*3+1] - points[i*3+1] - vel[i*3+1];
-        float dz = points[j*3+2] + vel[j*3+2] - points[i*3+2] - vel[i*3+2];
-        float l2 = dx*dx + dy*dy + dz*dz;
-        if (l2 < 1.0f) l2 = 1.0f;
-        float l = sqrtf(l2);
-        float s = (l - linkDistance) / l * linkStrength;
-        dx *= s; dy *= s; dz *= s;
-        vel[j*3] -= dx; vel[j*3+1] -= dy; vel[j*3+2] -= dz;
-        vel[i*3] += dx; vel[i*3+1] += dy; vel[i*3+2] += dz;
+    for (int pass = 0; pass < 2; pass++) {
+        int start = pass == 0 ? 0 : (linkN * 2 - 2);
+        int end   = pass == 0 ? (linkN * 2) : -2;
+        int step  = pass == 0 ? 2 : -2;
+        for (int p = start; p != end; p += step) {
+            int i = links[p], j = links[p+1];
+            float dx = points[j*3]   + vel[j*3]   - points[i*3]   - vel[i*3];
+            float dy = points[j*3+1] + vel[j*3+1] - points[i*3+1] - vel[i*3+1];
+            float dz = points[j*3+2] + vel[j*3+2] - points[i*3+2] - vel[i*3+2];
+            float l2 = dx*dx + dy*dy + dz*dz;
+            if (l2 < 1.0f) l2 = 1.0f;
+            float l = sqrtf(l2);
+            float s = (l - linkDistance) / l * linkStrength;
+            dx *= s; dy *= s; dz *= s;
+            vel[j*3] -= dx; vel[j*3+1] -= dy; vel[j*3+2] -= dz;
+            vel[i*3] += dx; vel[i*3+1] += dy; vel[i*3+2] += dz;
+        }
     }
 }
 

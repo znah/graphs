@@ -45,7 +45,6 @@ class GraphLayout {
         this.chargeStrength = -3.0;
         this.chargeMaxDist = 2000;
 
-        this.linkIterN = 2;
         this.linkDistance = 25;
         this.linkStrength = 0.5;
 
@@ -63,15 +62,17 @@ class GraphLayout {
         this.wasm.linkForce(this.linkN, this.linkStrength, this.linkDistance);
     }
 
-    chargeForce() {
+    buildOctree() {
         const {pointN} = this;
-        
         // Use WASM for octree construction
         this.nodeCount = this.wasm.buildOctree(pointN, 16, 10);
         this.treeExtent = this.wasm.get_tree_extent();
         this.treeCenter = this.wasm.tree_center; // From BUFFER(tree_center, ...)
-
         this.wasm.accumPoints(this.nodeCount, this.treeExtent);
+    }
+
+    chargeForce() {
+        const {pointN} = this;
         this.wasm.calcMultibodyForceDual(pointN, this.nodeCount, this.chargeMaxDist);
         this.wasm.applyChargeForces(pointN, this.chargeStrength);
     }
@@ -102,8 +103,9 @@ class GraphLayout {
 
     tick(step_n=1) {
         const f = 1.0-this.velocityDecay;
+        this.buildOctree();
         for (let k=0; k<step_n; ++k) {
-            for (let i=0; i<this.linkIterN; ++i) this.linkForce();
+            this.linkForce();
             this.chargeForce();
             this.wasm.updateNodes(this.pointN, f);
         }

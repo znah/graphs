@@ -37,6 +37,8 @@ class App {
             showOctree: false,
             chargeMaxDist: 2000,
             chargeStrength: -3.0,
+            linkDistance: 25,
+            linkStrength: 0.5,
             velocityDecay: 0.1,
             preset: '-',
             reset: () => this.reset(),
@@ -57,6 +59,12 @@ class App {
         this.gui.add(this.params, 'chargeStrength', -20, 20).onChange(v => {
             if (this.simulation) this.simulation.chargeStrength = v;
         });
+        this.gui.add(this.params, 'linkDistance', 1, 100).onChange(v => {
+            if (this.simulation) this.simulation.linkDistance = v;
+        });
+        this.gui.add(this.params, 'linkStrength', 0, 2).onChange(v => {
+            if (this.simulation) this.simulation.linkStrength = v;
+        });
         this.gui.add(this.params, 'velocityDecay', 0.0, 1.0).onChange(v => {
             if (this.simulation) this.simulation.velocityDecay = v;
         });
@@ -73,7 +81,6 @@ class App {
         }
 
         this.points = new Float32Array(256 * 256 * 4);
-        this.links = new Int32Array(256 * 256 * 2);
 
         this.autoTimer = 0;
         this.prevNodeCount = 0;
@@ -111,7 +118,7 @@ class App {
         
         const maxPoints = 65536;
         const maxNodes = 65536;
-        const maxLinks = maxPoints * 8;
+        const maxLinks = maxPoints * 4;
         this.wasm.instance.exports.init(maxPoints, maxNodes, maxLinks);
 
         this.bloom = new Bloom(this.glsl, this.gui);
@@ -132,6 +139,8 @@ class App {
         this.simulation.updateData(this.graph.nodes.length, this.graph.links, this.graph.addedHints);
         this.simulation.chargeMaxDist = this.params.chargeMaxDist;
         this.simulation.chargeStrength = this.params.chargeStrength;
+        this.simulation.linkDistance = this.params.linkDistance;
+        this.simulation.linkStrength = this.params.linkStrength;
         this.simulation.velocityDecay = this.params.velocityDecay;
         
         this.autoTimer = 0;
@@ -182,7 +191,6 @@ class App {
         }
         
         const linkN = this.graph.links.length / 2;
-        this.links.set(this.graph.links);
         
         const Inc = `
             vec3 rotate(vec3 p) {
@@ -201,7 +209,7 @@ class App {
         const renderData = {
             Inc,
             pointsTex: this.glsl({}, { data: this.points, size: [256, 256], format: 'rgba32f', tag: 'points' }),
-            linksTex: this.glsl({}, { data: this.links, size: [256, 256], format: 'rg32i', tag: 'links' }),
+            linksTex: this.glsl({}, { data: this.simulation.wasm.links, size: [256, 256*4], format: 'rg32i', tag: 'links' }),
             center, extent: treeExtent, lastGen, Blend: 's*sa+d*(1-sa)', Aspect: 'fit',
             rot: [this.rot.x, this.rot.y]
         };
@@ -285,7 +293,7 @@ class App {
                 this.handleAutonomousBehavior();
             } else {
                 if (this.graph.nodes.length <= this.params.growthLimit) {
-                    this.graph.grow();
+                    this.graph.grow(this.params.growthLimit);
                     if (this.simulation) this.simulation.updateData(this.graph.nodes.length, this.graph.links, this.graph.addedHints);
                     if (this.status) this.status.innerText = `${this.graph.nodes.length} nodes`;
                 }
